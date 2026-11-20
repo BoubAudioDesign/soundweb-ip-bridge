@@ -1,0 +1,15 @@
+[Unit]
+Description=Passerelle BSS Soundweb 9088 RS-232 <-> IP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=soundweb
+Group=dialout
+WorkingDirectory=/opt/soundweb-ip-bridge
+ExecStart=/opt/soundweb-ip-bridge/.venv/bin/python -m soundweb_bridge -c /etc/soundweb-bridge/config.yaml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

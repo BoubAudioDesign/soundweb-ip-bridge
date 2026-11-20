@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Télécommande Soundweb</title>
+<style>
+  :root { color-scheme: dark; --bg:#111418; --card:#1b2027; --line:#2c333d; --txt:#e8ecf1; --mut:#8b96a5; --acc:#2f8cff; --ok:#2fbf71; --ko:#e5484d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); }
+  header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  .status { font-size:13px; color:var(--mut); display:flex; align-items:center; gap:8px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--ko); }
+  .dot.on { background:var(--ok); }
+  main { padding:20px; display:grid; gap:16px; max-width:560px; margin:0 auto; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  h2 { font-size:15px; margin:0 0 4px; }
+  .cur { font-size:13px; color:var(--mut); margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
+  button { font:inherit; font-size:15px; padding:14px 10px; border-radius:10px; border:1px solid var(--line); background:#232a33; color:var(--txt); cursor:pointer; transition:background .15s, border-color .15s; }
+  button:hover { border-color:var(--acc); }
+  button.active { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  button.off { color:var(--mut); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .vol { display:flex; align-items:center; gap:14px; }
+  .vol .track { flex:1; position:relative; padding-bottom:18px; }
+  .vol input[type=range] { width:100%; height:40px; margin:0; accent-color:var(--acc); cursor:pointer; }
+  .vol .ticks { position:absolute; left:9px; right:9px; bottom:0; height:16px; font-size:11px; color:var(--mut); }
+  .vol .ticks span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+  .vol .db { min-width:78px; text-align:right; font-size:20px; font-variant-numeric:tabular-nums; font-weight:600; }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:var(--ko); color:#fff; padding:10px 16px; border-radius:8px; font-size:14px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Télécommande Soundweb 9088</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="link">Connexion…</span></div>
+</header>
+<main id="main"></main>
+<div id="toast"></div>
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const q = token ? "?token=" + encodeURIComponent(token) : "";
+let state = { selectors: [], presets: [], volumes: [], connected: false };
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 4000);
+}
+
+function setLink(connected, ws) {
+  document.getElementById("dot").classList.toggle("on", connected && ws);
+  document.getElementById("link").textContent = !ws ? "Passerelle injoignable" : connected ? "Soundweb connecté" : "Port série déconnecté";
+}
+
+let activePreset = null;  // id of the last preset recalled (unknown at start-up)
+let sock = null;
+const dragging = {};      // volume name -> true while the user moves the slider
+
+function fmtDb(db, vol) {
+  if (db == null) return "?";
+  if (db <= vol.min && vol.min <= -80) return "−∞";
+  return (db > 0 ? "+" : "") + db.toFixed(1).replace(".0", "") + " dB";
+}
+
+// Slider law: position 0..1000 <-> dB. "log" = fader law dB = max + 40*log10(position)
+// (75% -> -5 dB, 50% -> -12 dB, 25% -> -24 dB, 10% -> -40 dB, 0 -> min = "-inf").
+const STEPS = 1000;
+function posToDb(pos, vol) {
+  let db;
+  if (vol.law === "linear") db = vol.min + (vol.max - vol.min) * pos / STEPS;
+  else db = pos <= 0 ? vol.min : vol.max + 40 * Math.log10(pos / STEPS);
+  return Math.max(vol.min, Math.min(vol.max, Math.round(db * 10) / 10));
+}
+function dbToPos(db, vol) {
+  if (db == null || db <= vol.min) return 0;
+  if (vol.law === "linear") return Math.round(STEPS * (db - vol.min) / (vol.max - vol.min));
+  return Math.round(STEPS * Math.pow(10, (Math.min(db, vol.max) - vol.max) / 40));
+}
+
+function sendVolume(vol, db) {
+  if (sock && sock.readyState === 1) sock.send(JSON.stringify({ action: "volume", volume: vol.name, db }));
+}
+
+function renderVolume(vol) {
+  const s = document.createElement("section");
+  s.dataset.volume = vol.name;
+  s.innerHTML = `<h2></h2><div class="vol"><div class="track"><input type="range" min="0" step="1"><div class="ticks"></div></div><span class="db"></span></div>`;
+  s.querySelector("h2").textContent = vol.label;
+  const range = s.querySelector("input"), out = s.querySelector(".db");
+  range.max = STEPS;
+  range.value = dbToPos(vol.db, vol);
+  out.textContent = fmtDb(vol.db, vol);
+  const ticks = s.querySelector(".ticks");
+  const marks = (vol.law === "linear" ? [0, -20, -40, -60, -80] : [0, -5, -10, -20, -40])
+    .filter(d => d <= vol.max && d > vol.min);
+  for (const d of [...marks, vol.min]) {
+    const t = document.createElement("span");
+    t.textContent = d <= vol.min && vol.min <= -80 ? "−∞" : String(d);
+    t.style.left = (dbToPos(d, vol) / STEPS * 100) + "%";
+    ticks.appendChild(t);
+  }
+  let last = 0, timer = null;
+  range.addEventListener("input", () => {
+    dragging[vol.name] = true;
+    const db = posToDb(parseInt(range.value, 10), vol);
+    out.textContent = fmtDb(db, vol);
+    clearTimeout(timer);
+    const wait = 120 - (Date.now() - last);
+    timer = setTimeout(() => { last = Date.now(); sendVolume(vol, db); }, Math.max(0, wait));
+  });
+  range.addEventListener("change", () => {
+    clearTimeout(timer);
+    sendVolume(vol, posToDb(parseInt(range.value, 10), vol));
+    setTimeout(() => { dragging[vol.name] = false; }, 400);
+  });
+  return s;
+}
+
+function updateVolume(name, db) {
+  const vol = (state.volumes || []).find(v => v.name === name);
+  if (!vol) return;
+  vol.db = db;
+  if (dragging[name]) return;
+  const s = document.querySelector(`section[data-volume="${CSS.escape(name)}"]`);
+  if (!s) return;
+  if (db != null) s.querySelector("input").value = dbToPos(db, vol);
+  s.querySelector(".db").textContent = fmtDb(db, vol);
+}
+
+function render() {
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+  for (const vol of state.volumes || []) main.appendChild(renderVolume(vol));
+  const s = document.createElement("section");
+  s.innerHTML = `<h2>Presets</h2><div class="cur"></div><div class="grid"></div>`;
+  const cur = state.presets.find(p => p.id === activePreset);
+  s.querySelector(".cur").textContent = state.presets.length
+    ? "Dernier rappel : " + (cur ? cur.name : "inconnu")
+    : "Aucun preset défini dans config.yaml (section presets)";
+  for (const p of state.presets) {
+    const b = document.createElement("button");
+    b.textContent = p.name;
+    if (p.id === activePreset) b.classList.add("active");
+    b.onclick = () => call(`/api/presets/${encodeURIComponent(p.name)}`, b);
+    s.querySelector(".grid").appendChild(b);
+  }
+  main.appendChild(s);
+}
+
+async function call(path, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(path + q, { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) toast("Erreur : " + j.error);
+  } catch (e) { toast("Erreur réseau"); }
+  finally { btn.disabled = false; }
+}
+
+function connect() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + location.pathname.replace(/[^/]*$/, "") + "ws" + q);
+  sock = ws;
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "state") { state = m; if (m.active_preset != null) activePreset = m.active_preset; setLink(m.connected, true); render(); }
+    else if (m.type === "link") { state.connected = m.connected; setLink(m.connected, true); }
+    else if (m.type === "preset") { activePreset = m.id; render(); }
+    else if (m.type === "volume") updateVolume(m.name, m.db);
+    else if (m.type === "error") toast("Erreur : " + m.error);
+  };
+  ws.onclose = () => { setLink(false, false); setTimeout(connect, 2000); };
+}
+connect();
+</script>
+</body>
+</html>

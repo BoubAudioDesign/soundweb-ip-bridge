@@ -1,0 +1,59 @@
+# Passerelle Soundweb 9088 <-> IP
+serial:
+  # Port RS-232 ARRIÈRE du 9088 (câble null-modem 3 fils).
+  #   Linux   : /dev/ttyUSB0 (ou /dev/serial/by-id/... pour un nom stable)
+  #   Windows : COM3, COM4... (Gestionnaire de périphériques > Ports, ou : python -m soundweb_bridge --list-ports)
+  # Aussi possible via un convertisseur série/IP : "socket://192.168.1.50:4001" ou "rfc2217://..."
+  port: /dev/ttyUSB0
+  # protocol :
+  #   thirdparty (défaut) : nom du device terminé par "+s" (protocole du SDK BSS), 38400 bauds sans contrôle de flux
+  #   designer            : port laissé en mode Soundweb Designer, 115200 bauds + RTS/CTS ; rappels de presets uniquement
+  protocol: thirdparty
+  # baudrate / rtscts : facultatifs, la valeur par défaut dépend du protocole
+  # baudrate: 38400
+  # rtscts: false
+  ack_timeout: 1.0         # secondes avant renvoi (spécification BSS)
+  retries: 3
+
+http:
+  host: 0.0.0.0
+  port: 8080
+  token: ""                # si renseigné : ?token=... ou en-tête "Authorization: Bearer ..."
+
+tcp:
+  host: 0.0.0.0
+  port: 4999
+
+# Un bloc par objet "Source Selector" du design Soundweb Designer.
+# handle : numéro affiché dans la barre d'état de Soundweb Designer en survolant l'objet (après compilation).
+selectors:
+  salle:
+    label: Salle principale
+    handle: 0x00000005
+    sources:
+      1: PC pupitre
+      2: Lecteur Blu-ray
+      3: Micro HF
+      4: Visio
+  hall:
+    label: Hall d'accueil
+    handle: 0x00000009
+    sources:
+      1: Musique d'ambiance
+      2: Salle principale
+
+  # Sélection de source PAR RAPPEL DE PRESET (au lieu du handle, ou en complément) :
+  # chaque source déclenche un preset global (nom de la section "presets" ou index)
+  # ou un parameter preset [id, état]. Le handle n'est requis que si une source n'a pas de preset.
+  # Si un même preset est utilisé dans plusieurs zones, l'état de toutes ces zones est mis à jour.
+  # auditorium:
+  #   label: Auditorium
+  #   sources:
+  #     1: {label: Conférence, preset: Show}
+  #     2: {label: Concert, preset: 3}
+  #     3: {label: Visio, parameter_preset: [2, 1]}
+
+# Presets globaux (index dans la liste des presets, en partant de 0).
+presets:
+  Show: 0
+  Setup: 1
